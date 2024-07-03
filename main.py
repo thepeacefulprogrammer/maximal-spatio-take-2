@@ -6,7 +6,7 @@ Created on 28.11.2016
 
 import structures.input
 from algorithms.mainalg import maxspatiotempcolloc
-from algorithms.bb_randy_impl import BBmaxspatiotempcolloc, manhattan_distance
+from algorithms.bb_randy_impl import BBmaxspatiotempcolloc
 from algorithms.mdcop import mdcop
 from algorithms.mdcop import find_maximal
 from time import perf_counter
@@ -198,7 +198,7 @@ def experiment_one_subprocess(q, filename, minprev, minfreq, maxdist, verbose, a
     elif alg_name == "FASTMDCOPMINER":
         res = mdcop(data, maxdist, minprev, minfreq, verbose)
     elif alg_name == "BB_RANDY":
-        res = BBmaxspatiotempcolloc(data, maxdist, minprev, minfreq, manhattan_distance, False, verbose, False)
+        res = BBmaxspatiotempcolloc(data, maxdist, minprev, minfreq, None, False, verbose, False)
     else:
         print("Unknown algorithm")
     t2 = perf_counter()
