@@ -55,12 +55,23 @@ def is_prevalent(candidate, instance_counts, bounding_boxes, minprev):
     participation_counts = defaultdict(int)
     for feature in candidate:
         sorted_instances = bounding_boxes[feature]
-        for other_feature in candidate - {feature}:
-            count = 0
-            for bb in bounding_boxes[other_feature]:
-                index = binary_search(sorted_instances, bb.min_coords[0], key=lambda x: x.max_coords[0])
-                count += sum(1 for inst in sorted_instances[index:] if inst.intersects(bb))
-            participation_counts[feature] = max(participation_counts[feature], count)
+        other_features = candidate - {feature}
+
+        for other_feature in other_features:
+            other_instances = bounding_boxes[other_feature]
+            i, j = 0, 0
+            while i < len(sorted_instances) and j < len(other_instances):
+                if sorted_instances[i].max_coords[0] < other_instances[j].min_coords[0]:
+                    i += 1
+                elif other_instances[j].max_coords[0] < sorted_instances[i].min_coords[0]:
+                    j += 1
+                else:
+                    if sorted_instances[i].intersects(other_instances[j]):
+                        participation_counts[feature] += 1
+                    i += 1
+
+            if participation_counts[feature] >= feature_counts[feature] * minprev:
+                break
 
     prevalences = [participation_counts[feature] / feature_counts[feature] for feature in candidate]
     return min(prevalences) >= minprev if prevalences else False
