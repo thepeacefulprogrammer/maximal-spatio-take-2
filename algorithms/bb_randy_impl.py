@@ -1,8 +1,8 @@
 import time as tm
 from collections import defaultdict
 from itertools import combinations
-from algorithms.utils import manhattan_distance, chebyshev_distance
 import bisect
+from algorithms.utils import manhattan_distance, chebyshev_distance
 
 class BoundingBox:
     def __init__(self, min_coords, max_coords):
@@ -57,15 +57,10 @@ def generate_candidates(prev_candidates, k):
                     new_candidates.add(new_candidate)
     return new_candidates
 
-def BBmaxspatiotempcolloc(input_data, maxdist, minprev, minfreq, distance_metric=chebyshev_distance, predictions=False, verbose=0, clean_trees=False):
-    start_time = tm.time()
-    result = []
+def step1_build_bounding_boxes_and_find_prevalent_pairs(input_data, maxdist, distance_metric, minprev):
     all_features = set()
     bounding_boxes_per_time = {}
-
-    # Step 1: Build bounding boxes and find prevalent pairs for each time point
     prevalent_pairs = defaultdict(set)
-    step1_start = tm.time()
 
     for time, state in input_data.states.items():
         current_features = set(inst.id.feature for inst in state.instances)
@@ -78,37 +73,27 @@ def BBmaxspatiotempcolloc(input_data, maxdist, minprev, minfreq, distance_metric
             bounding_boxes[inst.id.feature].append(bb)
         bounding_boxes_per_time[time] = bounding_boxes
         
-        # Optimize prevalent pair finding
         sorted_features = sorted(current_features)
         for i, f1 in enumerate(sorted_features):
             for f2 in sorted_features[i+1:]:
                 pair = frozenset([f1, f2])
                 if is_prevalent(pair, instance_counts, bounding_boxes, minprev):
                     prevalent_pairs[time].add(pair)
+    
+    return all_features, bounding_boxes_per_time, prevalent_pairs
 
-    step1_end = tm.time()
-    if verbose > 0:
-        print(f"Step 1 (Build bounding boxes and find prevalent pairs) took {step1_end - step1_start:.2f} seconds")
-
-    # Step 2: Find time-prevalent pairs
-    step2_start = tm.time()
-    time_prevalent_pairs = {
+def step2_find_time_prevalent_pairs(prevalent_pairs, minfreq, num_states):
+    return {
         pair for pair in set.union(*prevalent_pairs.values())
-        if sum(pair in pairs for pairs in prevalent_pairs.values()) >= minfreq * len(input_data.states)
+        if sum(pair in pairs for pairs in prevalent_pairs.values()) >= minfreq * num_states
     }
-    step2_end = tm.time()
-    if verbose > 0:
-        print(f"Step 2 (Find time-prevalent pairs) took {step2_end - step2_start:.2f} seconds")
 
-    if not time_prevalent_pairs:
-        return []
-
-    # Step 3 & 4: Generate and prune candidate set
+def step3_and_4_generate_and_prune_candidates(input_data, time_prevalent_pairs, bounding_boxes_per_time, minfreq, minprev):
     candidates = list(time_prevalent_pairs)
+    prevalence_cache = {}
+    result = []
     k = 3
 
-    step34_start = tm.time()
-    prevalence_cache = {}
     while candidates:
         new_candidates = generate_candidates(candidates, k)
         prevalent_candidates = []
@@ -125,7 +110,6 @@ def BBmaxspatiotempcolloc(input_data, maxdist, minprev, minfreq, distance_metric
                     instance_counts = state.count_instances()
                     bounding_boxes = bounding_boxes_per_time[time]
                     
-                    # Algorithm 3: Improved instance identification with binary search
                     is_prevalent_flag = True
                     for feature in candidate:
                         other_features = candidate - {feature}
@@ -165,20 +149,46 @@ def BBmaxspatiotempcolloc(input_data, maxdist, minprev, minfreq, distance_metric
         result.extend(prevalent_candidates)
         candidates = prevalent_candidates
         k += 1
+    
+    return result
 
-        if verbose > 1:
-            print(f"Iteration for k={k-1}: {len(prevalent_candidates)} prevalent candidates found")
-
-    step34_end = tm.time()
-    if verbose > 0:
-        print(f"Steps 3 & 4 (Generate and prune candidates) took {step34_end - step34_start:.2f} seconds")
-
-    # Ensure maximality
-    step5_start = tm.time()
+def step5_ensure_maximality(result):
     maximal_result = []
     for pattern in sorted(result, key=len, reverse=True):
         if not any(pattern.issubset(maximal) for maximal in maximal_result):
             maximal_result.append(pattern)
+    return maximal_result
+
+def BBmaxspatiotempcolloc(input_data, maxdist, minprev, minfreq, distance_metric=chebyshev_distance, predictions=False, verbose=0, clean_trees=False):
+    start_time = tm.time()
+
+    # Step 1
+    step1_start = tm.time()
+    all_features, bounding_boxes_per_time, prevalent_pairs = step1_build_bounding_boxes_and_find_prevalent_pairs(input_data, maxdist, distance_metric, minprev)
+    step1_end = tm.time()
+    if verbose > 0:
+        print(f"Step 1 (Build bounding boxes and find prevalent pairs) took {step1_end - step1_start:.2f} seconds")
+
+    # Step 2
+    step2_start = tm.time()
+    time_prevalent_pairs = step2_find_time_prevalent_pairs(prevalent_pairs, minfreq, len(input_data.states))
+    step2_end = tm.time()
+    if verbose > 0:
+        print(f"Step 2 (Find time-prevalent pairs) took {step2_end - step2_start:.2f} seconds")
+
+    if not time_prevalent_pairs:
+        return []
+
+    # Step 3 & 4
+    step34_start = tm.time()
+    result = step3_and_4_generate_and_prune_candidates(input_data, time_prevalent_pairs, bounding_boxes_per_time, minfreq, minprev)
+    step34_end = tm.time()
+    if verbose > 0:
+        print(f"Steps 3 & 4 (Generate and prune candidates) took {step34_end - step34_start:.2f} seconds")
+
+    # Step 5
+    step5_start = tm.time()
+    maximal_result = step5_ensure_maximality(result)
     step5_end = tm.time()
     if verbose > 0:
         print(f"Step 5 (Ensure maximality) took {step5_end - step5_start:.2f} seconds")
