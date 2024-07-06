@@ -16,7 +16,13 @@ class BoundingBox:
                    for i in range(len(self.min_coords)))
 
 def create_bounding_box(instance, distance, distance_func):
-    offset = distance if distance_func == chebyshev_distance else distance / 2
+    if distance_func == chebyshev_distance:
+        offset = distance
+    elif distance_func == manhattan_distance:
+        offset = distance / 2
+    else:
+        raise ValueError("Unsupported distance function")
+    
     min_coords = [instance.pos.x - offset, instance.pos.y - offset]
     max_coords = [instance.pos.x + offset, instance.pos.y + offset]
     return BoundingBox(min_coords, max_coords)
@@ -77,6 +83,7 @@ def step1_build_bounding_boxes_and_find_prevalent_pairs(input_data, maxdist, dis
             future.result()
 
     return all_features, bounding_boxes_per_time, prevalent_pairs, time_prevalent_pairs
+
 
 def generate_candidates(prev_candidates, k):
     new_candidates = set()
