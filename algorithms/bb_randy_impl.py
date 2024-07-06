@@ -80,12 +80,11 @@ def is_prevalent(candidate, instance_counts, bounding_boxes, minprev):
 def binary_search(sorted_list, target, key=lambda x: x):
     return bisect.bisect_left(sorted_list, target, key=key)
 
-def process_time_step(time, state, maxdist, distance_metric, minprev, all_features, prevalent_pairs, time_prevalent_pairs, bounding_boxes_per_time, cache):
+def process_time_step_bounding_boxes(time, state, maxdist, distance_metric, all_features, bounding_boxes_per_time, cache):
     current_features = set(inst.id.feature for inst in state.instances)
     all_features.update(current_features)
-    instance_counts = state.count_instances()
-
     bounding_boxes = defaultdict(list)
+    
     for feature in current_features:
         if feature in cache:
             bounding_boxes[feature] = cache[feature]
@@ -101,28 +100,47 @@ def process_time_step(time, state, maxdist, distance_metric, minprev, all_featur
 
     bounding_boxes_per_time[time] = bounding_boxes
 
+def build_bounding_boxes(input_data, maxdist, distance_metric):
+    all_features = set()
+    bounding_boxes_per_time = {}
+    cache = {}
+
+    with ThreadPoolExecutor() as executor:
+        futures = [executor.submit(process_time_step_bounding_boxes, time, state, maxdist, distance_metric, all_features, bounding_boxes_per_time, cache) for time, state in input_data.states.items()]
+        for future in as_completed(futures):
+            future.result()
+
+    return all_features, bounding_boxes_per_time, cache
+
+def process_time_step_prevalent_pairs(time, state, bounding_boxes_per_time, minprev, prevalent_pairs, time_prevalent_pairs):
+    bounding_boxes = bounding_boxes_per_time[time]
+    instance_counts = state.count_instances()
+    current_features = set(inst.id.feature for inst in state.instances)
+    
     sorted_features = sorted(current_features)
     for i, f1 in enumerate(sorted_features):
-        for f2 in sorted_features[i+1:]:
+        for f2 in sorted_features[i + 1:]:
             pair = frozenset([f1, f2])
             if is_prevalent(pair, instance_counts, bounding_boxes, minprev):
                 prevalent_pairs[time].add(pair)
                 time_prevalent_pairs.add(pair)
 
-def step1_build_bounding_boxes_and_find_prevalent_pairs(input_data, maxdist, distance_metric, minprev):
-    all_features = set()
-    bounding_boxes_per_time = {}
+def find_prevalent_pairs(all_features, bounding_boxes_per_time, input_data, minprev):
     prevalent_pairs = defaultdict(set)
     time_prevalent_pairs = set()
-    cache = {}
-
+    
     with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(process_time_step, time, state, maxdist, distance_metric, minprev, all_features, prevalent_pairs, time_prevalent_pairs, bounding_boxes_per_time, cache) for time, state in input_data.states.items()]
+        futures = [executor.submit(process_time_step_prevalent_pairs, time, state, bounding_boxes_per_time, minprev, prevalent_pairs, time_prevalent_pairs) for time, state in input_data.states.items()]
         for future in as_completed(futures):
             future.result()
 
-    return all_features, bounding_boxes_per_time, prevalent_pairs, time_prevalent_pairs
+    return prevalent_pairs, time_prevalent_pairs
 
+def step1a_build_bounding_boxes(input_data, maxdist, distance_metric):
+    return build_bounding_boxes(input_data, maxdist, distance_metric)
+
+def step1b_find_prevalent_pairs(all_features, bounding_boxes_per_time, input_data, minprev):
+    return find_prevalent_pairs(all_features, bounding_boxes_per_time, input_data, minprev)
 
 def generate_candidates(prev_candidates, k):
     new_candidates = set()
@@ -172,8 +190,6 @@ def step4_prune_candidates(input_data, all_candidates, bounding_boxes_per_time, 
         result.extend(prevalent_candidates)
     
     return result
-
-
 
 def check_prevalence(candidate, bounding_boxes_per_time, input_data, minfreq, minprev, cache, prevalent_pairs):
     if candidate in cache:
@@ -237,12 +253,19 @@ def step5_ensure_maximality(result):
 def BBmaxspatiotempcolloc(input_data, maxdist, minprev, minfreq, distance_metric=chebyshev_distance, predictions=False, verbose=0, clean_trees=False):
     start_time = tm.time()
 
-    # Step 1
-    step1_start = tm.time()
-    all_features, bounding_boxes_per_time, prevalent_pairs, time_prevalent_pairs = step1_build_bounding_boxes_and_find_prevalent_pairs(input_data, maxdist, distance_metric, minprev)
-    step1_end = tm.time()
+    # Step 1A
+    step1a_start = tm.time()
+    all_features, bounding_boxes_per_time, cache = step1a_build_bounding_boxes(input_data, maxdist, distance_metric)
+    step1a_end = tm.time()
     if verbose > 0:
-        print(f"Step 1 (Build bounding boxes and find prevalent pairs) took {step1_end - step1_start:.2f} seconds")
+        print(f"Step 1A (Build bounding boxes) took {step1a_end - step1a_start:.2f} seconds")
+
+    # Step 1B
+    step1b_start = tm.time()
+    prevalent_pairs, time_prevalent_pairs = step1b_find_prevalent_pairs(all_features, bounding_boxes_per_time, input_data, minprev)
+    step1b_end = tm.time()
+    if verbose > 0:
+        print(f"Step 1B (Find prevalent pairs) took {step1b_end - step1b_start:.2f} seconds")
 
     # Step 2
     step2_start = tm.time()
