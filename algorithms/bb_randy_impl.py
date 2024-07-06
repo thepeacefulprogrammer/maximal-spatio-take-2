@@ -128,7 +128,8 @@ def check_prevalence(candidate, bounding_boxes_per_time, input_data, minfreq, mi
     time_prevalent_count = 0
     for time, bounding_boxes in bounding_boxes_per_time.items():
         state = input_data.states[time]
-        if all(feature in state.count_instances() for feature in candidate):
+        instance_counts = state.count_instances()
+        if all(feature in instance_counts for feature in candidate):
             if improved_instance_identification(candidate, bounding_boxes_per_time, state, time, minprev, cache):
                 time_prevalent_count += 1
                 if time_prevalent_count >= minfreq * len(input_data.states):
@@ -146,6 +147,11 @@ def improved_instance_identification(candidate, bounding_boxes_per_time, state, 
     sorting_dimension = 0  # Assuming sorting by the first dimension for binary search
 
     for feature in candidate:
+        if feature not in instance_counts:
+            print(f"Feature {feature} not found in instance_counts.")
+            cache[candidate] = False
+            return False
+        
         other_features = candidate - {feature}
         sorted_instances = sorted(bounding_boxes[feature], key=lambda bb: bb.min_coords[sorting_dimension])
 
