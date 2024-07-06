@@ -36,7 +36,7 @@ def is_prevalent(candidate, instance_counts, bounding_boxes, minprev):
 
     participation_counts = defaultdict(int)
     for feature in candidate:
-        sorted_instances = sorted(bounding_boxes[feature], key=lambda bb: bb.min_coords[0])
+        sorted_instances = bounding_boxes[feature]
         for other_feature in candidate - {feature}:
             count = 0
             for bb in bounding_boxes[other_feature]:
@@ -72,8 +72,13 @@ def step1_build_bounding_boxes_and_find_prevalent_pairs(input_data, maxdist, dis
         for inst in state.instances:
             bb = create_bounding_box(inst, maxdist, distance_metric)
             bounding_boxes[inst.id.feature].append(bb)
-        bounding_boxes_per_time[time] = bounding_boxes
         
+        # Sort the bounding boxes for each feature once
+        for feature in bounding_boxes:
+            bounding_boxes[feature].sort(key=lambda bb: bb.min_coords[0])
+        
+        bounding_boxes_per_time[time] = bounding_boxes
+
         sorted_features = sorted(current_features)
         for i, f1 in enumerate(sorted_features):
             for f2 in sorted_features[i+1:]:
@@ -120,17 +125,28 @@ def improved_instance_identification(candidate, bounding_boxes_per_time, state, 
     cache[candidate] = True
     return True
 
-def check_prevalence(candidate, bounding_boxes_per_time, input_data, minfreq, minprev, cache):
+def check_prevalence(candidate, bounding_boxes_per_time, input_data, minfreq, minprev, cache, step1_prevalent_pairs):
+    if len(candidate) == 2:
+        for time, pairs in step1_prevalent_pairs.items():
+            if candidate in pairs:
+                cache[candidate] = True
+                return True
+        cache[candidate] = False
+        return False
+
     time_prevalent_count = 0
-    for time, state in input_data.states.items():
+    for time, bounding_boxes in bounding_boxes_per_time.items():
+        state = input_data.states[time]
         if all(feature in state.count_instances() for feature in candidate):
             if improved_instance_identification(candidate, bounding_boxes_per_time, state, time, minprev, cache):
                 time_prevalent_count += 1
                 if time_prevalent_count >= minfreq * len(input_data.states):
+                    cache[candidate] = True
                     return True
+    cache[candidate] = False
     return False
 
-def step3_and_4_generate_and_prune_candidates(input_data, time_prevalent_pairs, bounding_boxes_per_time, minfreq, minprev):
+def step3_and_4_generate_and_prune_candidates(input_data, time_prevalent_pairs, bounding_boxes_per_time, minfreq, minprev, step1_prevalent_pairs):
     candidates = list(time_prevalent_pairs)
     prevalence_cache = {}
     result = []
@@ -142,11 +158,10 @@ def step3_and_4_generate_and_prune_candidates(input_data, time_prevalent_pairs, 
         prevalent_candidates = []
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_to_candidate = {executor.submit(check_prevalence, candidate, bounding_boxes_per_time, input_data, minfreq, minprev, prevalence_cache): candidate for candidate in new_candidates}
+            future_to_candidate = {executor.submit(check_prevalence, candidate, bounding_boxes_per_time, input_data, minfreq, minprev, prevalence_cache, step1_prevalent_pairs): candidate for candidate in new_candidates}
             for future in concurrent.futures.as_completed(future_to_candidate):
                 candidate = future_to_candidate[future]
                 is_prevalent = future.result()
-                prevalence_cache[candidate] = is_prevalent
                 if is_prevalent:
                     prevalent_candidates.append(candidate)
 
@@ -186,7 +201,7 @@ def BBmaxspatiotempcolloc(input_data, maxdist, minprev, minfreq, distance_metric
 
     # Step 3 & 4
     step34_start = tm.time()
-    result = step3_and_4_generate_and_prune_candidates(input_data, time_prevalent_pairs, bounding_boxes_per_time, minfreq, minprev)
+    result = step3_and_4_generate_and_prune_candidates(input_data, time_prevalent_pairs, bounding_boxes_per_time, minfreq, minprev, prevalent_pairs)
     step34_end = tm.time()
     if verbose > 0:
         print(f"Steps 3 & 4 (Generate and prune candidates) took {step34_end - step34_start:.2f} seconds")
