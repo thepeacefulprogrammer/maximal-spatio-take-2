@@ -3,6 +3,8 @@ from collections import defaultdict
 from itertools import combinations
 import bisect
 from algorithms.utils import manhattan_distance, chebyshev_distance
+import concurrent.futures
+
 
 class BoundingBox:
     def __init__(self, min_coords, max_coords):
@@ -88,6 +90,47 @@ def step2_find_time_prevalent_pairs(prevalent_pairs, minfreq, num_states):
         if sum(pair in pairs for pairs in prevalent_pairs.values()) >= minfreq * num_states
     }
 
+def improved_instance_identification(candidate, bounding_boxes_per_time, state, time, minprev, cache):
+    if candidate in cache:
+        return cache[candidate]
+    
+    instance_counts = state.count_instances()
+    bounding_boxes = bounding_boxes_per_time[time]
+    sorting_dimension = 0  # Assuming sorting by the first dimension for binary search
+
+    for feature in candidate:
+        other_features = candidate - {feature}
+        sorted_instances = sorted(bounding_boxes[feature], key=lambda bb: bb.min_coords[sorting_dimension])
+
+        for other_feature in other_features:
+            count = 0
+            for bb in bounding_boxes[other_feature]:
+                index = binary_search(sorted_instances, bb.min_coords[sorting_dimension], key=lambda x: x.max_coords[sorting_dimension])
+                if index < len(sorted_instances):
+                    upper_bound = bb.max_coords[sorting_dimension]
+                    for inst in sorted_instances[index:]:
+                        if inst.min_coords[sorting_dimension] > upper_bound:
+                            break
+                        if inst.intersects(bb):
+                            count += 1
+                            if count / instance_counts[feature] >= minprev:
+                                break
+            if count / instance_counts[feature] < minprev:
+                cache[candidate] = False
+                return False
+    cache[candidate] = True
+    return True
+
+def check_prevalence(candidate, bounding_boxes_per_time, input_data, minfreq, minprev, cache):
+    time_prevalent_count = 0
+    for time, state in input_data.states.items():
+        if all(feature in state.count_instances() for feature in candidate):
+            if improved_instance_identification(candidate, bounding_boxes_per_time, state, time, minprev, cache):
+                time_prevalent_count += 1
+                if time_prevalent_count >= minfreq * len(input_data.states):
+                    return True
+    return False
+
 def step3_and_4_generate_and_prune_candidates(input_data, time_prevalent_pairs, bounding_boxes_per_time, minfreq, minprev):
     candidates = list(time_prevalent_pairs)
     prevalence_cache = {}
@@ -95,59 +138,22 @@ def step3_and_4_generate_and_prune_candidates(input_data, time_prevalent_pairs, 
     k = 3
 
     while candidates:
+        print(f"Generating candidates of size {k}")
         new_candidates = generate_candidates(candidates, k)
         prevalent_candidates = []
 
-        for candidate in new_candidates:
-            if candidate in prevalence_cache:
-                if prevalence_cache[candidate]:
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future_to_candidate = {executor.submit(check_prevalence, candidate, bounding_boxes_per_time, input_data, minfreq, minprev, prevalence_cache): candidate for candidate in new_candidates}
+            for future in concurrent.futures.as_completed(future_to_candidate):
+                candidate = future_to_candidate[future]
+                is_prevalent = future.result()
+                prevalence_cache[candidate] = is_prevalent
+                if is_prevalent:
                     prevalent_candidates.append(candidate)
-                continue
-
-            time_prevalent_count = 0
-            for time, state in input_data.states.items():
-                if all(feature in state.count_instances() for feature in candidate):
-                    instance_counts = state.count_instances()
-                    bounding_boxes = bounding_boxes_per_time[time]
-                    
-                    is_prevalent_flag = True
-                    for feature in candidate:
-                        other_features = candidate - {feature}
-                        sorted_instances = sorted(bounding_boxes[feature], key=lambda bb: bb.min_coords[0])
-                        
-                        for other_feature in other_features:
-                            count = 0
-                            for bb in bounding_boxes[other_feature]:
-                                index = binary_search(sorted_instances, bb.min_coords[0], key=lambda x: x.max_coords[0])
-                                if index < len(sorted_instances):
-                                    upper_bound = bb.max_coords[0]
-                                    for inst in sorted_instances[index:]:
-                                        if inst.min_coords[0] > upper_bound:
-                                            break
-                                        if inst.intersects(bb):
-                                            count += 1
-                                            if count / instance_counts[feature] >= minprev:
-                                                break
-                            
-                            if count / instance_counts[feature] < minprev:
-                                is_prevalent_flag = False
-                                break
-                        
-                        if not is_prevalent_flag:
-                            break
-                    
-                    if is_prevalent_flag:
-                        time_prevalent_count += 1
-                        if time_prevalent_count >= minfreq * len(input_data.states):
-                            prevalent_candidates.append(candidate)
-                            prevalence_cache[candidate] = True
-                            break
-            
-            if time_prevalent_count < minfreq * len(input_data.states):
-                prevalence_cache[candidate] = False
 
         result.extend(prevalent_candidates)
         candidates = prevalent_candidates
+        print(f"Found {len(prevalent_candidates)} prevalent candidates of size {k}")
         k += 1
     
     return result
