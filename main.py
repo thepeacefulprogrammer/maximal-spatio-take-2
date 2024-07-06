@@ -238,6 +238,7 @@ experiment_one_tasks=[
         'filename':C('pigeons_zonnani_rd2_2880T.csv'),
         #'filename':C('large_testMDCOP.txt'),
         #'filename':C('testMDCOP21.txt'),
+        # 'filename':C('synthesized_data.csv'),
         'maxdist':I([5]),
         'minfreq':I([0.9]),
         'minprev':I([0.5, 0.7]),

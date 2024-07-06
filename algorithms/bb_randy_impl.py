@@ -6,6 +6,7 @@ import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from algorithms.utils import manhattan_distance, chebyshev_distance
 
+
 def rotate_point_pi_over_4(point):
     q1 = point.x
     q2 = point.y
@@ -140,18 +141,28 @@ def step2_find_time_prevalent_pairs(prevalent_pairs, time_prevalent_pairs, minfr
         if sum(pair in pairs for pairs in prevalent_pairs.values()) >= minfreq * num_states
     }
 
-def step3_and_4_generate_and_prune_candidates(input_data, time_prevalent_pairs, bounding_boxes_per_time, minfreq, minprev, prevalent_pairs):
+def step3_generate_candidates(time_prevalent_pairs):
     candidates = list(time_prevalent_pairs)
-    prevalence_cache = {}
-    result = list(time_prevalent_pairs)  # Start with prevalent pairs
     k = 3  # Start from size 3 candidates
+    all_candidates = []
 
     while candidates:
         new_candidates = generate_candidates(candidates, k)
+        all_candidates.append(new_candidates)
+        candidates = new_candidates
+        k += 1
+    
+    return all_candidates
+
+def step4_prune_candidates(input_data, all_candidates, bounding_boxes_per_time, minfreq, minprev, prevalent_pairs):
+    prevalence_cache = {}
+    result = list(all_candidates[0])  # Start with prevalent pairs
+
+    for candidates in all_candidates[1:]:
         prevalent_candidates = []
 
         with ThreadPoolExecutor() as executor:
-            future_to_candidate = {executor.submit(check_prevalence, candidate, bounding_boxes_per_time, input_data, minfreq, minprev, prevalence_cache, prevalent_pairs): candidate for candidate in new_candidates}
+            future_to_candidate = {executor.submit(check_prevalence, candidate, bounding_boxes_per_time, input_data, minfreq, minprev, prevalence_cache, prevalent_pairs): candidate for candidate in candidates}
             for future in as_completed(future_to_candidate):
                 candidate = future_to_candidate[future]
                 is_prevalent = future.result()
@@ -159,10 +170,10 @@ def step3_and_4_generate_and_prune_candidates(input_data, time_prevalent_pairs, 
                     prevalent_candidates.append(candidate)
 
         result.extend(prevalent_candidates)
-        candidates = prevalent_candidates
-        k += 1
     
     return result
+
+
 
 def check_prevalence(candidate, bounding_boxes_per_time, input_data, minfreq, minprev, cache, prevalent_pairs):
     if candidate in cache:
@@ -243,12 +254,19 @@ def BBmaxspatiotempcolloc(input_data, maxdist, minprev, minfreq, distance_metric
     if not time_prevalent_pairs:
         return []
 
-    # Step 3 & 4
-    step34_start = tm.time()
-    result = step3_and_4_generate_and_prune_candidates(input_data, time_prevalent_pairs, bounding_boxes_per_time, minfreq, minprev, prevalent_pairs)
-    step34_end = tm.time()
+    # Step 3
+    step3_start = tm.time()
+    all_candidates = step3_generate_candidates(time_prevalent_pairs)
+    step3_end = tm.time()
     if verbose > 0:
-        print(f"Steps 3 & 4 (Generate and prune candidates) took {step34_end - step34_start:.2f} seconds")
+        print(f"Step 3 (Generate candidates) took {step3_end - step3_start:.2f} seconds")
+
+    # Step 4
+    step4_start = tm.time()
+    result = step4_prune_candidates(input_data, all_candidates, bounding_boxes_per_time, minfreq, minprev, prevalent_pairs)
+    step4_end = tm.time()
+    if verbose > 0:
+        print(f"Step 4 (Prune candidates) took {step4_end - step4_start:.2f} seconds")
 
     # Step 5
     step5_start = tm.time()
