@@ -5,7 +5,6 @@ import bisect
 from algorithms.utils import manhattan_distance, chebyshev_distance
 import concurrent.futures
 
-
 class BoundingBox:
     def __init__(self, min_coords, max_coords):
         self.min_coords = min_coords
