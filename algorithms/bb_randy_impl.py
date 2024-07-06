@@ -48,7 +48,8 @@ class CompositeBoundingBox:
                     self.max_coords[1] < other.min_coords[1] or
                     self.min_coords[1] > other.max_coords[1])
 
-def is_prevalent(candidate, instance_counts, bounding_boxes, minprev):
+
+def is_prevalent(candidate, instance_counts, bounding_boxes, minprev, intersection_cache):
     feature_counts = {feature: instance_counts[feature] for feature in candidate}
     if len(feature_counts) != len(candidate):
         return False
@@ -59,23 +60,30 @@ def is_prevalent(candidate, instance_counts, bounding_boxes, minprev):
         other_features = candidate - {feature}
 
         for other_feature in other_features:
-            other_instances = bounding_boxes[other_feature]
-            i, j = 0, 0
-            while i < len(sorted_instances) and j < len(other_instances):
-                if sorted_instances[i].max_coords[0] < other_instances[j].min_coords[0]:
-                    i += 1
-                elif other_instances[j].max_coords[0] < sorted_instances[i].min_coords[0]:
-                    j += 1
-                else:
-                    if sorted_instances[i].intersects(other_instances[j]):
-                        participation_counts[feature] += 1
-                    i += 1
+            if (feature, other_feature) in intersection_cache:
+                intersecting_instances = intersection_cache[(feature, other_feature)]
+            else:
+                intersecting_instances = set()
+                other_instances = bounding_boxes[other_feature]
+                i, j = 0, 0
+                while i < len(sorted_instances) and j < len(other_instances):
+                    if sorted_instances[i].max_coords[0] < other_instances[j].min_coords[0]:
+                        i += 1
+                    elif other_instances[j].max_coords[0] < sorted_instances[i].min_coords[0]:
+                        j += 1
+                    else:
+                        if sorted_instances[i].intersects(other_instances[j]):
+                            intersecting_instances.add((i, j))
+                        i += 1
+                intersection_cache[(feature, other_feature)] = intersecting_instances
 
+            participation_counts[feature] += len(intersecting_instances)
             if participation_counts[feature] >= feature_counts[feature] * minprev:
                 break
 
     prevalences = [participation_counts[feature] / feature_counts[feature] for feature in candidate]
     return min(prevalences) >= minprev if prevalences else False
+
 
 def binary_search(sorted_list, target, key=lambda x: x):
     return bisect.bisect_left(sorted_list, target, key=key)
@@ -112,7 +120,7 @@ def build_bounding_boxes(input_data, maxdist, distance_metric):
 
     return all_features, bounding_boxes_per_time, cache
 
-def process_time_step_prevalent_pairs(time, state, bounding_boxes_per_time, minprev, prevalent_pairs, time_prevalent_pairs):
+def process_time_step_prevalent_pairs(time, state, bounding_boxes_per_time, minprev, prevalent_pairs, time_prevalent_pairs, intersection_cache):
     bounding_boxes = bounding_boxes_per_time[time]
     instance_counts = state.count_instances()
     current_features = set(inst.id.feature for inst in state.instances)
@@ -121,20 +129,22 @@ def process_time_step_prevalent_pairs(time, state, bounding_boxes_per_time, minp
     for i, f1 in enumerate(sorted_features):
         for f2 in sorted_features[i + 1:]:
             pair = frozenset([f1, f2])
-            if is_prevalent(pair, instance_counts, bounding_boxes, minprev):
+            if is_prevalent(pair, instance_counts, bounding_boxes, minprev, intersection_cache):
                 prevalent_pairs[time].add(pair)
                 time_prevalent_pairs.add(pair)
 
 def find_prevalent_pairs(all_features, bounding_boxes_per_time, input_data, minprev):
     prevalent_pairs = defaultdict(set)
     time_prevalent_pairs = set()
-    
+    intersection_cache = {}
+
     with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(process_time_step_prevalent_pairs, time, state, bounding_boxes_per_time, minprev, prevalent_pairs, time_prevalent_pairs) for time, state in input_data.states.items()]
+        futures = [executor.submit(process_time_step_prevalent_pairs, time, state, bounding_boxes_per_time, minprev, prevalent_pairs, time_prevalent_pairs, intersection_cache) for time, state in input_data.states.items()]
         for future in as_completed(futures):
             future.result()
 
     return prevalent_pairs, time_prevalent_pairs
+
 
 def step1a_build_bounding_boxes(input_data, maxdist, distance_metric):
     return build_bounding_boxes(input_data, maxdist, distance_metric)
