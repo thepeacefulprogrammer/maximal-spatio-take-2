@@ -4,6 +4,7 @@ from itertools import combinations
 import bisect
 from algorithms.utils import manhattan_distance, chebyshev_distance
 import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor
 
 class BoundingBox:
     def __init__(self, min_coords, max_coords):
@@ -15,13 +16,7 @@ class BoundingBox:
                    for i in range(len(self.min_coords)))
 
 def create_bounding_box(instance, distance, distance_func):
-    if distance_func == manhattan_distance:
-        offset = distance / 2
-    elif distance_func == chebyshev_distance:
-        offset = distance
-    else:
-        raise ValueError("Unsupported distance function")
-    
+    offset = distance if distance_func == chebyshev_distance else distance / 2
     min_coords = [instance.pos.x - offset, instance.pos.y - offset]
     max_coords = [instance.pos.x + offset, instance.pos.y + offset]
     return BoundingBox(min_coords, max_coords)
@@ -47,24 +42,13 @@ def is_prevalent(candidate, instance_counts, bounding_boxes, minprev):
     prevalences = [participation_counts[feature] / feature_counts[feature] for feature in candidate]
     return min(prevalences) >= minprev if prevalences else False
 
-def generate_candidates(prev_candidates, k):
-    new_candidates = set()
-    sorted_prev = sorted(prev_candidates)
-    for i, c1 in enumerate(sorted_prev):
-        for c2 in sorted_prev[i+1:]:
-            new_candidate = c1.union(c2)
-            if len(new_candidate) == k:
-                if all(frozenset(comb) in prev_candidates for comb in combinations(new_candidate, k-1)):
-                    new_candidates.add(new_candidate)
-    return new_candidates
-
 def step1_build_bounding_boxes_and_find_prevalent_pairs(input_data, maxdist, distance_metric, minprev):
     all_features = set()
     bounding_boxes_per_time = {}
     prevalent_pairs = defaultdict(set)
     time_prevalent_pairs = set()
 
-    for time, state in input_data.states.items():
+    def process_time_step(time, state):
         current_features = set(inst.id.feature for inst in state.instances)
         all_features.update(current_features)
         instance_counts = state.count_instances()
@@ -86,8 +70,24 @@ def step1_build_bounding_boxes_and_find_prevalent_pairs(input_data, maxdist, dis
                 if is_prevalent(pair, instance_counts, bounding_boxes, minprev):
                     prevalent_pairs[time].add(pair)
                     time_prevalent_pairs.add(pair)
-    
+
+    with ThreadPoolExecutor() as executor:
+        futures = [executor.submit(process_time_step, time, state) for time, state in input_data.states.items()]
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
+
     return all_features, bounding_boxes_per_time, prevalent_pairs, time_prevalent_pairs
+
+def generate_candidates(prev_candidates, k):
+    new_candidates = set()
+    sorted_prev = sorted(prev_candidates)
+    for i, c1 in enumerate(sorted_prev):
+        for c2 in sorted_prev[i+1:]:
+            new_candidate = c1.union(c2)
+            if len(new_candidate) == k:
+                if all(frozenset(comb) in prev_candidates for comb in combinations(new_candidate, k-1)):
+                    new_candidates.add(new_candidate)
+    return new_candidates
 
 def step2_find_time_prevalent_pairs(prevalent_pairs, time_prevalent_pairs, minfreq, num_states):
     return {
