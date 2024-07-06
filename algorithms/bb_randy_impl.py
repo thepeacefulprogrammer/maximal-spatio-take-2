@@ -6,7 +6,6 @@ import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from algorithms.utils import manhattan_distance, chebyshev_distance
 
-
 def rotate_point_pi_over_4(point):
     q1 = point.x
     q2 = point.y
@@ -69,21 +68,25 @@ def is_prevalent(candidate, instance_counts, bounding_boxes, minprev):
 def binary_search(sorted_list, target, key=lambda x: x):
     return bisect.bisect_left(sorted_list, target, key=key)
 
-def process_time_step(time, state, maxdist, distance_metric, minprev, all_features, prevalent_pairs, time_prevalent_pairs, bounding_boxes_per_time):
+def process_time_step(time, state, maxdist, distance_metric, minprev, all_features, prevalent_pairs, time_prevalent_pairs, bounding_boxes_per_time, cache):
     current_features = set(inst.id.feature for inst in state.instances)
     all_features.update(current_features)
     instance_counts = state.count_instances()
-    
+
     bounding_boxes = defaultdict(list)
     for feature in current_features:
-        feature_points = [inst.pos for inst in state.instances if inst.id.feature == feature]
-        if feature_points:
-            bb = CompositeBoundingBox(feature_points, maxdist, distance_metric)
-            bounding_boxes[feature].append(bb)
-    
+        if feature in cache:
+            bounding_boxes[feature] = cache[feature]
+        else:
+            feature_points = [inst.pos for inst in state.instances if inst.id.feature == feature]
+            if feature_points:
+                bb = CompositeBoundingBox(feature_points, maxdist, distance_metric)
+                bounding_boxes[feature].append(bb)
+            cache[feature] = bounding_boxes[feature]
+
     for feature in bounding_boxes:
         bounding_boxes[feature].sort(key=lambda bb: bb.min_coords[0])
-    
+
     bounding_boxes_per_time[time] = bounding_boxes
 
     sorted_features = sorted(current_features)
@@ -99,13 +102,15 @@ def step1_build_bounding_boxes_and_find_prevalent_pairs(input_data, maxdist, dis
     bounding_boxes_per_time = {}
     prevalent_pairs = defaultdict(set)
     time_prevalent_pairs = set()
+    cache = {}
 
     with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(process_time_step, time, state, maxdist, distance_metric, minprev, all_features, prevalent_pairs, time_prevalent_pairs, bounding_boxes_per_time) for time, state in input_data.states.items()]
+        futures = [executor.submit(process_time_step, time, state, maxdist, distance_metric, minprev, all_features, prevalent_pairs, time_prevalent_pairs, bounding_boxes_per_time, cache) for time, state in input_data.states.items()]
         for future in as_completed(futures):
             future.result()
 
     return all_features, bounding_boxes_per_time, prevalent_pairs, time_prevalent_pairs
+
 
 def generate_candidates(prev_candidates, k):
     new_candidates = set()
