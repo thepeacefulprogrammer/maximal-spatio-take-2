@@ -9,6 +9,7 @@ from algorithms.mainalg import maxspatiotempcolloc
 from algorithms.bb_randy_impl import BBmaxspatiotempcolloc
 from algorithms.mdcop import mdcop
 from algorithms.mdcop import find_maximal
+from algorithms.utils import manhattan_distance
 from time import perf_counter
 from experiments.batchgenerator import I,C,P,executeAll
 import csv
@@ -51,9 +52,6 @@ else:
     print("Running on Windows. File descriptor limits are not applicable.")
 
 
-# Calculate Manhattan distance (dist1)
-def manhattan_distance(p1, p2):
-    return sum(abs(a - b) for a, b in zip(p1, p2))
 
 def basic_test():
     data=structures.input.InputDataset()
@@ -198,7 +196,7 @@ def experiment_one_subprocess(q, filename, minprev, minfreq, maxdist, verbose, a
     elif alg_name == "FASTMDCOPMINER":
         res = mdcop(data, maxdist, minprev, minfreq, verbose)
     elif alg_name == "BB_RANDY":
-        res = BBmaxspatiotempcolloc(data, maxdist, minprev, minfreq, None, False, verbose, False)
+        res = BBmaxspatiotempcolloc(data, maxdist, minprev, minfreq, manhattan_distance, False, verbose, False)
     else:
         print("Unknown algorithm")
     t2 = perf_counter()
@@ -243,7 +241,7 @@ experiment_one_tasks=[
         'maxdist':I([5]),
         'minfreq':I([0.9]),
         'minprev':I([0.5, 0.7]),
-        'verbose':C(0),
+        'verbose':C(1),
         'alg_name':I(["BB_RANDY","MAXMDCOP_PRED=0_SAVE=0","MAXMDCOP_PRED=1_SAVE=0","MAXMDCOP_PRED=0_SAVE=1","MAXMDCOP_PRED=1_SAVE=1","MAXMDCOP_PRED=0_SAVE=2","MAXMDCOP_PRED=1_SAVE=2","FASTMDCOPMINER"])
 
     }

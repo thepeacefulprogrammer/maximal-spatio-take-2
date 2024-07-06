@@ -1,153 +1,146 @@
-import math
+import time as tm
 from collections import defaultdict
 from itertools import combinations
-
-class Position:
-    def __init__(self, x=0, y=0):
-        self.x = x
-        self.y = y
-
-class FeatureInstanceIdentifier:
-    def __init__(self, feature, instance):
-        self.feature = feature
-        self.instance = instance
-    
-    def __hash__(self):
-        return hash((self.feature, self.instance))
-    
-    def __eq__(self, other):
-        return (self.feature, self.instance) == (other.feature, other.instance)
-    
-    def __str__(self):
-        return f"<{self.feature},{self.instance}>"
-
-class FeatureInstance:
-    def __init__(self, position, instanceid):
-        self.pos = position
-        self.id = instanceid
+from algorithms.utils import manhattan_distance, chebyshev_distance
 
 class BoundingBox:
-    def __init__(self, min_x, min_y, max_x, max_y):
-        self.min_x = min_x
-        self.min_y = min_y
-        self.max_x = max_x
-        self.max_y = max_y
+    def __init__(self, min_coords, max_coords):
+        self.min_coords = min_coords
+        self.max_coords = max_coords
 
     def intersects(self, other):
-        return (self.min_x <= other.max_x and self.max_x >= other.min_x and
-                self.min_y <= other.max_y and self.max_y >= other.min_y)
+        return all(self.min_coords[i] <= other.max_coords[i] and self.max_coords[i] >= other.min_coords[i] 
+                   for i in range(len(self.min_coords)))
 
-    @staticmethod
-    def from_instances(instances, distance):
-        min_x = min(inst.pos.x for inst in instances) - distance
-        min_y = min(inst.pos.y for inst in instances) - distance
-        max_x = max(inst.pos.x for inst in instances) + distance
-        max_y = max(inst.pos.y for inst in instances) + distance
-        return BoundingBox(min_x, min_y, max_x, max_y)
+def create_bounding_box(instance, distance, distance_func):
+    if distance_func == manhattan_distance:
+        offset = distance / 2
+    elif distance_func == chebyshev_distance:
+        offset = distance
+    else:
+        raise ValueError("Unsupported distance function")
+    
+    min_coords = [instance.pos.x - offset, instance.pos.y - offset]
+    max_coords = [instance.pos.x + offset, instance.pos.y + offset]
+    return BoundingBox(min_coords, max_coords)
 
-class ICPITree:
-    def __init__(self):
-        self.tree = defaultdict(lambda: defaultdict(set))
+def is_prevalent(candidate, instance_counts, bounding_boxes, minprev):
+    feature_counts = {}
+    for feature in candidate:
+        if feature not in instance_counts or feature not in bounding_boxes:
+            return False
+        feature_counts[feature] = instance_counts[feature]
 
-    def insert(self, instance):
-        self.tree[instance.id.feature][instance.id.instance].add(instance)
+    participation_counts = defaultdict(int)
+    for feature in candidate:
+        for other_feature in candidate - {feature}:
+            count = sum(1 for bb1 in bounding_boxes[feature] 
+                        for bb2 in bounding_boxes[other_feature] 
+                        if bb1.intersects(bb2))
+            participation_counts[feature] = max(participation_counts[feature], count)
 
-    def get_neighbors(self, instance, feature, distance):
-        neighbors = set()
-        for other_instance in self.tree[feature].values():
-            for inst in other_instance:
-                if euclidean_distance(instance.pos, inst.pos) <= distance:
-                    neighbors.add(inst)
-        return neighbors
-
-def euclidean_distance(pos1, pos2):
-    return math.sqrt((pos1.x - pos2.x)**2 + (pos1.y - pos2.y)**2)
+    prevalences = [participation_counts[feature] / feature_counts[feature] for feature in candidate]
+    return min(prevalences) >= minprev if prevalences else False
 
 def generate_candidates(prev_candidates, k):
     new_candidates = set()
-    for c1 in prev_candidates:
-        for c2 in prev_candidates:
-            if len(c1.union(c2)) == k:
-                new_candidates.add(c1.union(c2))
+    for i, c1 in enumerate(prev_candidates):
+        for c2 in prev_candidates[i+1:]:
+            new_candidate = c1.union(c2)
+            if len(new_candidate) == k:
+                if all(frozenset(comb) in prev_candidates for comb in combinations(new_candidate, k-1)):
+                    new_candidates.add(new_candidate)
     return new_candidates
 
-def is_prevalent(instances, candidate, distance, min_prev):
-    icpi_tree = ICPITree()
-    for inst in instances:
-        icpi_tree.insert(inst)
-
-    feature_counts = defaultdict(int)
-    participation_counts = defaultdict(int)
-
-    for instance in instances:
-        if instance.id.feature in candidate:
-            feature_counts[instance.id.feature] += 1
-            is_participating = all(
-                icpi_tree.get_neighbors(instance, feature, distance)
-                for feature in candidate if feature != instance.id.feature
-            )
-            if is_participating:
-                participation_counts[instance.id.feature] += 1
-
-    prevalences = [
-        participation_counts[feature] / feature_counts[feature]
-        for feature in candidate
-        if feature_counts[feature] > 0
-    ]
-
-    # If prevalences is empty, it means no instances of the candidate features were found
-    if not prevalences:
-        return False
-
-    return min(prevalences) >= min_prev
-
-def BBmaxspatiotempcolloc(input_data, maxdist, minprev, minfreq, distance_metric=None, predictions=False, verbose=0, clean_trees=False):
+def BBmaxspatiotempcolloc(input_data, maxdist, minprev, minfreq, distance_metric=chebyshev_distance, predictions=False, verbose=0, clean_trees=False):
+    start_time = tm.time()
     result = []
     all_features = set()
-    for state in input_data.states.values():
-        all_features.update(inst.id.feature for inst in state.instances)
+    bounding_boxes_per_time = {}
 
-    # Step 1 & 2: Find prevalent pairs and remove non-time-prevalent pairs
+    # Step 1: Build bounding boxes and find prevalent pairs for each time point
     prevalent_pairs = defaultdict(set)
-    for time, state in input_data.states.items():
-        for pair in combinations(all_features, 2):
-            if is_prevalent(state.instances, set(pair), maxdist, minprev):
-                prevalent_pairs[time].add(frozenset(pair))
+    step1_start = tm.time()
 
+    for time, state in input_data.states.items():
+        current_features = set(inst.id.feature for inst in state.instances)
+        all_features.update(current_features)
+        instance_counts = state.count_instances()
+        
+        bounding_boxes = defaultdict(list)
+        for inst in state.instances:
+            bb = create_bounding_box(inst, maxdist, distance_metric)
+            bounding_boxes[inst.id.feature].append(bb)
+        bounding_boxes_per_time[time] = bounding_boxes
+        
+        for f1 in current_features:
+            for f2 in current_features:
+                if f1 >= f2:
+                    continue
+                pair = frozenset([f1, f2])
+                if is_prevalent(pair, instance_counts, bounding_boxes, minprev):
+                    prevalent_pairs[time].add(pair)
+
+    step1_end = tm.time()
+    if verbose > 0:
+        print(f"Step 1 (Build bounding boxes and find prevalent pairs) took {step1_end - step1_start:.2f} seconds")
+
+    # Step 2: Find time-prevalent pairs
+    step2_start = tm.time()
     time_prevalent_pairs = {
         pair for pair in set.union(*prevalent_pairs.values())
         if sum(pair in pairs for pairs in prevalent_pairs.values()) >= minfreq * len(input_data.states)
     }
+    step2_end = tm.time()
+    if verbose > 0:
+        print(f"Step 2 (Find time-prevalent pairs) took {step2_end - step2_start:.2f} seconds")
+
+    if not time_prevalent_pairs:
+        return []
 
     # Step 3 & 4: Generate and prune candidate set
-    candidates = time_prevalent_pairs
+    candidates = list(time_prevalent_pairs)
     k = 3
 
+    step34_start = tm.time()
     while candidates:
         new_candidates = generate_candidates(candidates, k)
-        prevalent_candidates = set()
+        prevalent_candidates = []
 
         for candidate in new_candidates:
             time_prevalent_count = 0
             for time, state in input_data.states.items():
-                if is_prevalent(state.instances, candidate, maxdist, minprev):
-                    time_prevalent_count += 1
-            
-            if time_prevalent_count >= minfreq * len(input_data.states):
-                prevalent_candidates.add(candidate)
-                result.append(candidate)
+                if all(feature in state.count_instances() for feature in candidate):
+                    instance_counts = state.count_instances()
+                    if is_prevalent(candidate, instance_counts, bounding_boxes_per_time[time], minprev):
+                        time_prevalent_count += 1
+                        if time_prevalent_count >= minfreq * len(input_data.states):
+                            prevalent_candidates.append(candidate)
+                            break
 
+        result.extend(prevalent_candidates)
         candidates = prevalent_candidates
         k += 1
 
+        if verbose > 1:
+            print(f"Iteration for k={k-1}: {len(prevalent_candidates)} prevalent candidates found")
+
+    step34_end = tm.time()
+    if verbose > 0:
+        print(f"Steps 3 & 4 (Generate and prune candidates) took {step34_end - step34_start:.2f} seconds")
+
     # Ensure maximality
+    step5_start = tm.time()
     maximal_result = []
     for pattern in sorted(result, key=len, reverse=True):
         if not any(pattern.issubset(maximal) for maximal in maximal_result):
             maximal_result.append(pattern)
-    
-    return [frozenset(pattern) for pattern in maximal_result]
+    step5_end = tm.time()
+    if verbose > 0:
+        print(f"Step 5 (Ensure maximality) took {step5_end - step5_start:.2f} seconds")
 
-# This function signature matches what's expected in main.py
-def maxspatiotempcolloc(input_data, maxdist, minprev, minfreq, predictions=False, save_trees=0, verbose=0, clean_trees=False):
-    return BBmaxspatiotempcolloc(input_data, maxdist, minprev, minfreq, None, predictions, verbose, clean_trees)
+    end_time = tm.time()
+    if verbose > 0:
+        print(f"Total execution time: {end_time - start_time:.2f} seconds")
+    
+    return maximal_result

@@ -7,6 +7,13 @@ Created on 29.11.2016
 import itertools
 import functools
 
+
+def manhattan_distance(p1, p2):
+    return abs(p1.x - p2.x) + abs(p1.y - p2.y)
+
+def chebyshev_distance(p1, p2):
+    return max(abs(p1.x - p2.x), abs(p1.y - p2.y))
+
 '''
 Simple map reduce function. Executes map_func and key_func on input data from iterable. Performs reduction w.r.t the computed key using reduce_func.
 '''
