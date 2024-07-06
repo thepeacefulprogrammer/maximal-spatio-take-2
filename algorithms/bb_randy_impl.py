@@ -2,62 +2,51 @@ import time as tm
 from collections import defaultdict
 from itertools import combinations
 import bisect
-from algorithms.utils import manhattan_distance, chebyshev_distance
-import concurrent.futures
-from concurrent.futures import ThreadPoolExecutor
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from algorithms.utils import manhattan_distance, chebyshev_distance
 
 
-class RotatedBoundingBox:
-    def __init__(self, min_coords, max_coords, angle):
-        self.min_coords = min_coords
-        self.max_coords = max_coords
-        self.angle = angle
-        self.aabb_min, self.aabb_max = self.calculate_aabb()
+def rotate_point_pi_over_4(point):
+    q1 = point.x
+    q2 = point.y
+    rotated_q1 = (q1 - q2) / math.sqrt(2)
+    rotated_q2 = (q1 + q2) / math.sqrt(2)
+    return rotated_q1, rotated_q2
 
-    def calculate_aabb(self):
-        corners = [
-            rotate_point(self.min_coords[0], self.min_coords[1], self.angle),
-            rotate_point(self.min_coords[0], self.max_coords[1], self.angle),
-            rotate_point(self.max_coords[0], self.min_coords[1], self.angle),
-            rotate_point(self.max_coords[0], self.max_coords[1], self.angle)
-        ]
-        min_x = min(corner[0] for corner in corners)
-        min_y = min(corner[1] for corner in corners)
-        max_x = max(corner[0] for corner in corners)
-        max_y = max(corner[1] for corner in corners)
-        return (min_x, min_y), (max_x, max_y)
+def object_bounding_box_manhattan(position, d):
+    q1, q2 = position
+    min_point = (q1 - d, q2 - d)
+    max_point = (q1 + d, q2 + d)
+    return min_point, max_point
+
+def object_bounding_box_chebyshev(position, d):
+    q1, q2 = position
+    min_point = (q1 - d, q2 - d)
+    max_point = (q1 + d, q2 + d)
+    return min_point, max_point
+
+def bounding_box(points):
+    min_point = tuple(map(min, zip(*points)))
+    max_point = tuple(map(max, zip(*points)))
+    return min_point, max_point
+
+def composite_bounding_box(points, d, distance_fn):
+    rotated_points = [rotate_point_pi_over_4(p) for p in points]
+    bounding_boxes = [object_bounding_box_manhattan(p, d) if distance_fn == manhattan_distance else object_bounding_box_chebyshev(p, d) for p in rotated_points]
+    min_points, max_points = zip(*bounding_boxes)
+    return bounding_box(min_points), bounding_box(max_points)
+
+class CompositeBoundingBox:
+    def __init__(self, points, distance, distance_func):
+        self.min_coords, self.max_coords = composite_bounding_box(points, distance, distance_func)
 
     def intersects(self, other):
         # Check AABB intersection
-        return not (self.aabb_max[0] < other.aabb_min[0] or
-                    self.aabb_min[0] > other.aabb_max[0] or
-                    self.aabb_max[1] < other.aabb_min[1] or
-                    self.aabb_min[1] > other.aabb_max[1])
-
-def rotate_point(x, y, angle):
-    rad = math.radians(angle)
-    cos_rad = math.cos(rad)
-    sin_rad = math.sin(rad)
-    x_new = x * cos_rad - y * sin_rad
-    y_new = x * sin_rad + y * cos_rad
-    return x_new, y_new
-
-def create_rotated_bounding_box(instance, distance, distance_func, angle):
-    if distance_func == chebyshev_distance:
-        offset = distance
-    elif distance_func == manhattan_distance:
-        offset = distance / 2
-    else:
-        raise ValueError("Unsupported distance function")
-
-    min_coords = [instance.pos.x - offset, instance.pos.y - offset]
-    max_coords = [instance.pos.x + offset, instance.pos.y + offset]
-
-    return RotatedBoundingBox(min_coords, max_coords, angle)
-
-def binary_search(sorted_list, target, key=lambda x: x):
-    return bisect.bisect_left(sorted_list, target, key=key)
+        return not (self.max_coords[0] < other.min_coords[0] or
+                    self.min_coords[0] > other.max_coords[0] or
+                    self.max_coords[1] < other.min_coords[1] or
+                    self.min_coords[1] > other.max_coords[1])
 
 def is_prevalent(candidate, instance_counts, bounding_boxes, minprev):
     feature_counts = {feature: instance_counts[feature] for feature in candidate}
@@ -70,25 +59,30 @@ def is_prevalent(candidate, instance_counts, bounding_boxes, minprev):
         for other_feature in candidate - {feature}:
             count = 0
             for bb in bounding_boxes[other_feature]:
-                index = binary_search(sorted_instances, bb.aabb_min[0], key=lambda x: x.aabb_max[0])
+                index = binary_search(sorted_instances, bb.min_coords[0], key=lambda x: x.max_coords[0])
                 count += sum(1 for inst in sorted_instances[index:] if inst.intersects(bb))
             participation_counts[feature] = max(participation_counts[feature], count)
 
     prevalences = [participation_counts[feature] / feature_counts[feature] for feature in candidate]
     return min(prevalences) >= minprev if prevalences else False
 
-def process_time_step(time, state, maxdist, distance_metric, minprev, angle, all_features, prevalent_pairs, time_prevalent_pairs, bounding_boxes_per_time):
+def binary_search(sorted_list, target, key=lambda x: x):
+    return bisect.bisect_left(sorted_list, target, key=key)
+
+def process_time_step(time, state, maxdist, distance_metric, minprev, all_features, prevalent_pairs, time_prevalent_pairs, bounding_boxes_per_time):
     current_features = set(inst.id.feature for inst in state.instances)
     all_features.update(current_features)
     instance_counts = state.count_instances()
     
     bounding_boxes = defaultdict(list)
-    for inst in state.instances:
-        bb = create_rotated_bounding_box(inst, maxdist, distance_metric, angle)
-        bounding_boxes[inst.id.feature].append(bb)
+    for feature in current_features:
+        feature_points = [inst.pos for inst in state.instances if inst.id.feature == feature]
+        if feature_points:
+            bb = CompositeBoundingBox(feature_points, maxdist, distance_metric)
+            bounding_boxes[feature].append(bb)
     
     for feature in bounding_boxes:
-        bounding_boxes[feature].sort(key=lambda bb: bb.aabb_min[0])
+        bounding_boxes[feature].sort(key=lambda bb: bb.min_coords[0])
     
     bounding_boxes_per_time[time] = bounding_boxes
 
@@ -100,15 +94,15 @@ def process_time_step(time, state, maxdist, distance_metric, minprev, angle, all
                 prevalent_pairs[time].add(pair)
                 time_prevalent_pairs.add(pair)
 
-def step1_build_bounding_boxes_and_find_prevalent_pairs(input_data, maxdist, distance_metric, minprev, angle=45):
+def step1_build_bounding_boxes_and_find_prevalent_pairs(input_data, maxdist, distance_metric, minprev):
     all_features = set()
     bounding_boxes_per_time = {}
     prevalent_pairs = defaultdict(set)
     time_prevalent_pairs = set()
 
     with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(process_time_step, time, state, maxdist, distance_metric, minprev, angle, all_features, prevalent_pairs, time_prevalent_pairs, bounding_boxes_per_time) for time, state in input_data.states.items()]
-        for future in concurrent.futures.as_completed(futures):
+        futures = [executor.submit(process_time_step, time, state, maxdist, distance_metric, minprev, all_features, prevalent_pairs, time_prevalent_pairs, bounding_boxes_per_time) for time, state in input_data.states.items()]
+        for future in as_completed(futures):
             future.result()
 
     return all_features, bounding_boxes_per_time, prevalent_pairs, time_prevalent_pairs
@@ -137,13 +131,12 @@ def step3_and_4_generate_and_prune_candidates(input_data, time_prevalent_pairs, 
     k = 3  # Start from size 3 candidates
 
     while candidates:
-        print(f"Generating candidates of size {k}")
         new_candidates = generate_candidates(candidates, k)
         prevalent_candidates = []
 
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        with ThreadPoolExecutor() as executor:
             future_to_candidate = {executor.submit(check_prevalence, candidate, bounding_boxes_per_time, input_data, minfreq, minprev, prevalence_cache, prevalent_pairs): candidate for candidate in new_candidates}
-            for future in concurrent.futures.as_completed(future_to_candidate):
+            for future in as_completed(future_to_candidate):
                 candidate = future_to_candidate[future]
                 is_prevalent = future.result()
                 if is_prevalent:
@@ -151,7 +144,6 @@ def step3_and_4_generate_and_prune_candidates(input_data, time_prevalent_pairs, 
 
         result.extend(prevalent_candidates)
         candidates = prevalent_candidates
-        print(f"Found {len(prevalent_candidates)} prevalent candidates of size {k}")
         k += 1
     
     return result
@@ -183,7 +175,6 @@ def improved_instance_identification(candidate, bounding_boxes_per_time, state, 
 
     for feature in candidate:
         if feature not in instance_counts:
-            print(f"Feature {feature} not found in instance_counts.")
             cache[candidate] = False
             return False
         
