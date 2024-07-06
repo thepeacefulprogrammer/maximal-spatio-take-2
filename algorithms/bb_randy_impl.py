@@ -36,28 +36,34 @@ def create_bounding_box(instance, distance, distance_func):
 def binary_search(sorted_list, target, key=lambda x: x):
     return bisect.bisect_left(sorted_list, target, key=key)
 
-def is_prevalent(candidate, instance_counts, bounding_boxes, minprev):
-    cbb = None
-    for feature in candidate:
-        if cbb is None:
-            cbb = bounding_boxes[feature][0]
-        else:
-            new_cbb = None
-            for bb in bounding_boxes[feature]:
-                intersection = BoundingBox.intersection(cbb, bb)
-                if intersection:
-                    new_cbb = intersection
-                    break
-            if new_cbb is None:
-                return False
-            cbb = new_cbb
+def is_prevalent(candidate, instance_counts, bounding_boxes, minprev, cbb_cache):
+    if candidate in cbb_cache:
+        cbb = cbb_cache[candidate]
+    else:
+        cbb = None
+        for i in range(64):  # Assume max 64 features
+            if candidate & (1 << i):
+                if cbb is None:
+                    cbb = bounding_boxes[i][0]
+                else:
+                    new_cbb = None
+                    for bb in bounding_boxes[i]:
+                        intersection = BoundingBox.intersection(cbb, bb)
+                        if intersection:
+                            new_cbb = intersection
+                            break
+                    if new_cbb is None:
+                        return False
+                    cbb = new_cbb
+        cbb_cache[candidate] = cbb
 
     participation_counts = defaultdict(int)
-    for feature in candidate:
-        count = sum(1 for bb in bounding_boxes[feature] if bb.intersects(cbb))
-        participation_counts[feature] = count
+    for i in range(64):
+        if candidate & (1 << i):
+            count = sum(1 for bb in bounding_boxes[i] if bb.intersects(cbb))
+            participation_counts[i] = count
 
-    prevalences = [participation_counts[feature] / instance_counts[feature] for feature in candidate]
+    prevalences = [participation_counts[i] / instance_counts[i] for i in range(64) if candidate & (1 << i)]
     return min(prevalences) >= minprev if prevalences else False
 
 def generate_candidates(prev_candidates, k):
@@ -65,9 +71,9 @@ def generate_candidates(prev_candidates, k):
     sorted_prev = sorted(prev_candidates)
     for i, c1 in enumerate(sorted_prev):
         for c2 in sorted_prev[i+1:]:
-            new_candidate = c1.union(c2)
-            if len(new_candidate) == k:
-                if all(frozenset(comb) in prev_candidates for comb in combinations(new_candidate, k-1)):
+            new_candidate = c1 | c2  # Bitwise OR for faster union
+            if bin(new_candidate).count('1') == k:
+                if all((new_candidate & (1 << bit)) in prev_candidates for bit in range(k)):
                     new_candidates.add(new_candidate)
     return new_candidates
 
@@ -96,8 +102,8 @@ def BBmaxspatiotempcolloc(input_data, maxdist, minprev, minfreq, distance_metric
         sorted_features = sorted(current_features)
         for i, f1 in enumerate(sorted_features):
             for f2 in sorted_features[i+1:]:
-                pair = frozenset([f1, f2])
-                if is_prevalent(pair, instance_counts, bounding_boxes, minprev):
+                pair = (1 << f1) | (1 << f2)  # Bitwise representation
+                if is_prevalent(pair, instance_counts, bounding_boxes, minprev, {}):
                     prevalent_pairs[time].add(pair)
 
     step1_end = tm.time()
@@ -122,6 +128,7 @@ def BBmaxspatiotempcolloc(input_data, maxdist, minprev, minfreq, distance_metric
     k = 3
 
     step34_start = tm.time()
+    cbb_cache = {}
     while candidates:
         new_candidates = generate_candidates(candidates, k)
         prevalent_candidates = []
@@ -129,9 +136,9 @@ def BBmaxspatiotempcolloc(input_data, maxdist, minprev, minfreq, distance_metric
         for candidate in new_candidates:
             time_prevalent_count = 0
             for time, state in input_data.states.items():
-                if all(feature in state.count_instances() for feature in candidate):
+                if all((candidate & (1 << feature)) != 0 for feature in state.count_instances()):
                     instance_counts = state.count_instances()
-                    if is_prevalent(candidate, instance_counts, bounding_boxes_per_time[time], minprev):
+                    if is_prevalent(candidate, instance_counts, bounding_boxes_per_time[time], minprev, cbb_cache):
                         time_prevalent_count += 1
                         if time_prevalent_count >= minfreq * len(input_data.states):
                             prevalent_candidates.append(candidate)
@@ -151,8 +158,8 @@ def BBmaxspatiotempcolloc(input_data, maxdist, minprev, minfreq, distance_metric
     # Ensure maximality
     step5_start = tm.time()
     maximal_result = []
-    for pattern in sorted(result, key=len, reverse=True):
-        if not any(pattern.issubset(maximal) for maximal in maximal_result):
+    for pattern in sorted(result, key=lambda x: bin(x).count('1'), reverse=True):
+        if not any(pattern & maximal == pattern for maximal in maximal_result):
             maximal_result.append(pattern)
     step5_end = tm.time()
     if verbose > 0:
@@ -162,4 +169,4 @@ def BBmaxspatiotempcolloc(input_data, maxdist, minprev, minfreq, distance_metric
     if verbose > 0:
         print(f"Total execution time: {end_time - start_time:.2f} seconds")
     
-    return maximal_result
+    return [frozenset(i for i in range(64) if (pattern & (1 << i)) != 0) for pattern in maximal_result]
