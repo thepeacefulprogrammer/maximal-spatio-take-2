@@ -120,37 +120,61 @@ def build_bounding_boxes(input_data, maxdist, distance_metric):
 
     return all_features, bounding_boxes_per_time, cache
 
-def process_time_step_prevalent_pairs(time, state, bounding_boxes_per_time, minprev, prevalent_pairs, time_prevalent_pairs, intersection_cache):
-    bounding_boxes = bounding_boxes_per_time[time]
+def find_prevalent_pairs(all_features, bounding_boxes_per_time, input_data, minprev, minfreq):
+    prevalent_pairs = defaultdict(set)
+    time_prevalent_pairs = set()
+    intersection_cache = {}
+    pair_prevalence_counts = defaultdict(int)
+    total_time_steps = len(input_data.states)
+    min_required_prevalence = math.ceil(minfreq * total_time_steps)
+
+    for time, state in input_data.states.items():
+        time_pairs = process_time_step_prevalent_pairs(
+            time,
+            state,
+            bounding_boxes_per_time[time],
+            minprev,
+            intersection_cache,
+            pair_prevalence_counts,
+            min_required_prevalence,
+            total_time_steps - time
+        )
+        prevalent_pairs[time] = time_pairs
+        time_prevalent_pairs.update(time_pairs)
+
+    # Filter pairs that meet the minfreq criterion
+    final_time_prevalent_pairs = {pair for pair, count in pair_prevalence_counts.items() 
+                                  if count >= min_required_prevalence}
+
+    return prevalent_pairs, final_time_prevalent_pairs
+
+def process_time_step_prevalent_pairs(time, state, bounding_boxes, minprev, intersection_cache, 
+                                      pair_prevalence_counts, min_required_prevalence, remaining_time_steps):
     instance_counts = state.count_instances()
     current_features = set(inst.id.feature for inst in state.instances)
+    time_pairs = set()
     
     sorted_features = sorted(current_features)
     for i, f1 in enumerate(sorted_features):
         for f2 in sorted_features[i + 1:]:
             pair = frozenset([f1, f2])
+            
+            # Skip if it's impossible to reach min_required_prevalence
+            if pair_prevalence_counts[pair] + remaining_time_steps < min_required_prevalence:
+                continue
+
             if is_prevalent(pair, instance_counts, bounding_boxes, minprev, intersection_cache):
-                prevalent_pairs[time].add(pair)
-                time_prevalent_pairs.add(pair)
+                time_pairs.add(pair)
+                pair_prevalence_counts[pair] += 1
 
-def find_prevalent_pairs(all_features, bounding_boxes_per_time, input_data, minprev):
-    prevalent_pairs = defaultdict(set)
-    time_prevalent_pairs = set()
-    intersection_cache = {}
-
-    with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(process_time_step_prevalent_pairs, time, state, bounding_boxes_per_time, minprev, prevalent_pairs, time_prevalent_pairs, intersection_cache) for time, state in input_data.states.items()]
-        for future in as_completed(futures):
-            future.result()
-
-    return prevalent_pairs, time_prevalent_pairs
+    return time_pairs
 
 
 def step1a_build_bounding_boxes(input_data, maxdist, distance_metric):
     return build_bounding_boxes(input_data, maxdist, distance_metric)
 
-def step1b_find_prevalent_pairs(all_features, bounding_boxes_per_time, input_data, minprev):
-    return find_prevalent_pairs(all_features, bounding_boxes_per_time, input_data, minprev)
+def step1b_find_prevalent_pairs(all_features, bounding_boxes_per_time, input_data, minprev, minfreq):
+    return find_prevalent_pairs(all_features, bounding_boxes_per_time, input_data, minprev, minfreq)
 
 def generate_candidates(prev_candidates, k):
     new_candidates = set()
@@ -263,7 +287,7 @@ def step5_ensure_maximality(result):
 def BBmaxspatiotempcolloc(input_data, maxdist, minprev, minfreq, distance_metric=chebyshev_distance, predictions=False, verbose=0, clean_trees=False):
     start_time = tm.time()
 
-    # Step 1A
+   # Step 1A
     step1a_start = tm.time()
     all_features, bounding_boxes_per_time, cache = step1a_build_bounding_boxes(input_data, maxdist, distance_metric)
     step1a_end = tm.time()
@@ -272,7 +296,7 @@ def BBmaxspatiotempcolloc(input_data, maxdist, minprev, minfreq, distance_metric
 
     # Step 1B
     step1b_start = tm.time()
-    prevalent_pairs, time_prevalent_pairs = step1b_find_prevalent_pairs(all_features, bounding_boxes_per_time, input_data, minprev)
+    prevalent_pairs, time_prevalent_pairs = step1b_find_prevalent_pairs(all_features, bounding_boxes_per_time, input_data, minprev, minfreq)
     step1b_end = tm.time()
     if verbose > 0:
         print(f"Step 1B (Find prevalent pairs) took {step1b_end - step1b_start:.2f} seconds")
