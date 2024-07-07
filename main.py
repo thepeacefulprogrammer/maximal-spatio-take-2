@@ -9,7 +9,7 @@ from algorithms.mainalg import maxspatiotempcolloc
 from algorithms.bb_randy_impl import BBmaxspatiotempcolloc
 from algorithms.mdcop import mdcop
 from algorithms.mdcop import find_maximal
-from algorithms.utils import manhattan_distance
+from algorithms.utils import manhattan_distance, chebyshev_distance
 from time import perf_counter
 from experiments.batchgenerator import I,C,P,executeAll
 import csv
@@ -196,7 +196,7 @@ def experiment_one_subprocess(q, filename, minprev, minfreq, maxdist, verbose, a
     elif alg_name == "FASTMDCOPMINER":
         res = mdcop(data, maxdist, minprev, minfreq, verbose)
     elif alg_name == "BB_RANDY":
-        res = BBmaxspatiotempcolloc(data, maxdist, minprev, minfreq, manhattan_distance, False, verbose, False)
+        res = BBmaxspatiotempcolloc(data, maxdist, minprev, minfreq, chebyshev_distance, False, verbose, False)
     else:
         print("Unknown algorithm")
     t2 = perf_counter()
@@ -236,9 +236,7 @@ def perform_experiment_all(output_name,tasks):
 experiment_one_tasks=[
     {
         'filename':C('pigeons_zonnani_rd2_2880T.csv'),
-        #'filename':C('large_testMDCOP.txt'),
-        #'filename':C('testMDCOP21.txt'),
-        # 'filename':C('synthesized_data.csv'),
+        # 'filename':C('testMDCOP21.txt'),
         'maxdist':I([5]),
         'minfreq':I([0.9]),
         'minprev':I([0.5, 0.7]),
